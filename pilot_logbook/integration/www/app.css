@@ -164,3 +164,7 @@ details { margin-top: 12px; } summary { cursor: pointer; color: var(--accent); }
   .times .trow { grid-template-columns: 70px 1fr 1fr 36px; gap: 6px; }
   .step button { width: 34px; }
 }
+
+/* "More fields" on the entry page */
+.card.more > summary { cursor: pointer; padding: 10px 0; font-size: 15px; color: var(--accent); list-style-position: inside; }
+.card.more[open] > summary { border-bottom: 1px solid var(--line); margin-bottom: 4px; }

@@ -12,7 +12,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="icon" type="image/png" href="icon-192.png">
-<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="app.css?v=1.0.5">
 </head>
 <body>
 <header class="topbar">
@@ -71,6 +71,15 @@
             <div id="timeRows"></div>
           </div>
 
+          <details class="card entry more" id="moreFields">
+            <summary>More fields <span class="muted" id="moreHint"></span></summary>
+            <div class="frow"><span class="fl">SE</span><div class="fv"><input name="se" inputmode="decimal" placeholder="Single-engine hours"></div></div>
+            <div class="frow"><span class="fl">ME</span><div class="fv"><input name="me" inputmode="decimal" placeholder="Multi-engine hours"></div></div>
+            <div class="frow"><span class="fl">Sim Inst</span><div class="fv"><input name="simInst" inputmode="decimal"></div></div>
+            <div class="frow"><span class="fl">PIC Name</span><div class="fv"><input name="picName" list="dl-names"></div></div>
+            <div class="frow"><span class="fl">SIC Name</span><div class="fv"><input name="sicName" list="dl-names"></div></div>
+          </details>
+
           <div class="actions">
             <button class="btn danger" type="button" id="delBtn">Delete</button>
             <span class="grow"></span>
@@ -104,7 +113,13 @@
         <label class="inline">Dates in the file are
           <select id="impDateFmt"><option value="auto">Detect automatically</option><option value="ymd">Year-Month-Day</option><option value="mdy">Month/Day/Year (US)</option><option value="dmy">Day/Month/Year</option></select>
         </label>
-        <label class="inline chk"><input type="checkbox" id="impSkipDup" checked> Skip flights that are already in the logbook</label>
+        <label class="inline">Flights already in the logbook
+          <select id="impDupMode">
+            <option value="skip">Skip them</option>
+            <option value="update">Update them with this file's values</option>
+            <option value="again">Import them again as extra copies</option>
+          </select>
+        </label>
       </div>
       <div class="tablewrap"><table class="tbl maptbl" id="impMap"></table></div>
       <h3>Preview</h3>
@@ -167,8 +182,9 @@
 <datalist id="dl-aircraft"></datalist>
 <datalist id="dl-type"></datalist>
 <datalist id="dl-route"></datalist>
+<datalist id="dl-names"></datalist>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script src="app.js"></script>
+<script src="app.js?v=1.0.5"></script>
 </body>
 </html>

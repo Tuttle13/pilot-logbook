@@ -245,12 +245,20 @@ function mirrorSic() {
   const p = fld('role').value === 'PIC' ? 'pic' : 'sic';
   fld(p + 'Day').value = fld('fltDay').value;
   fld(p + 'Night').value = fld('fltNight').value;
+  // SE/ME (when filled in) also follow the total flight time.
+  const tot = (parseHours(fld('fltDay').value) || 0) + (parseHours(fld('fltNight').value) || 0);
+  for (const k of ['me', 'se']) if (fld(k).value.trim()) { fld(k).value = fmtH(tot) || '0.0'; break; }
 }
+const MORE_NUM = ['se', 'me', 'simInst'], MORE_TXT = ['picName', 'sicName'];
 function fillForm(f) {
   for (const k of ['date', 'time', 'aircraft', 'type', 'route']) fld(k).value = f[k] ?? '';
   fld('role').value = f.role === 'PIC' ? 'PIC' : 'SIC';
   fld('ifr').checked = !!f.ifr; fld('vfr').checked = !!f.vfr;
   for (const k of SPLIT_KEYS) fld(k).value = f[k] ? fmtH(f[k]) : '';
+  for (const k of MORE_NUM) fld(k).value = f[k] ? fmtH(f[k]) : '';
+  for (const k of MORE_TXT) fld(k).value = f[k] || '';
+  const filled = [...MORE_NUM, ...MORE_TXT].filter(k => f[k]).length;
+  $('#moreHint').textContent = filled ? `(${filled} filled in)` : '';
   $$('input.bad', form).forEach(i => i.classList.remove('bad'));
   updateRowTotals(); updateRowVisibility();
   formDirty = false;
@@ -268,13 +276,21 @@ function readForm() {
     f[k] = bad ? 0 : v;
   }
   for (const [p, , tot] of SPLITS) delete f[tot];   // recomputed from splits
+  for (const k of MORE_NUM) {
+    const raw = fld(k).value.trim(), v = parseHours(raw), bad = isNaN(v);
+    fld(k).classList.toggle('bad', bad); if (bad) ok = false;
+    if (raw === '' || bad) delete f[k]; else f[k] = v;
+  }
+  for (const k of MORE_TXT) { const v = fld(k).value.trim(); if (v) f[k] = v; else delete f[k]; }
   fld('date').classList.toggle('bad', !f.date); if (!f.date) ok = false;
   f.id = editingId; f.created = f.created || Date.now();
-  if (!ok) return null;
+  if (!ok) { if ($('.bad', $('#moreFields'))) $('#moreFields').open = true; return null; }
   normalize(f);
-  // Single/multi-engine time follows the aircraft type's earlier flights (e.g. B738 -> ME).
-  const prev = f.type && live().find(x => x.id !== f.id && x.type === f.type && (x.me || x.se));
-  if (prev) { f.me = prev.me ? f.total : 0; f.se = prev.me ? 0 : f.total; }
+  // If SE and ME were left blank, fill one from the aircraft type's earlier flights (e.g. B738 -> ME).
+  if (f.se == null && f.me == null) {
+    const prev = f.type && live().find(x => x.id !== f.id && x.type === f.type && (x.me || x.se));
+    if (prev && f.total) { if (prev.me) f.me = f.total; else f.se = f.total; }
+  }
   return f;
 }
 function openEditor(f, isNew) {
@@ -383,6 +399,7 @@ function renderDatalists() {
   $('#dl-aircraft').innerHTML = opts(all.map(f => f.aircraft));
   $('#dl-type').innerHTML = opts(all.map(f => f.type));
   $('#dl-route').innerHTML = opts(all.map(f => f.route));
+  $('#dl-names').innerHTML = opts(all.flatMap(f => [f.picName, f.sicName]));
 }
 
 // ---------- totals ----------
@@ -591,10 +608,29 @@ function renderImport() {
     }).join('') + '</tbody>';
   renderImportPreview();
 }
+// Pair each file row with an existing flight (same date, aircraft, route and flight time).
+// Identical flights on the same day are matched one-for-one, so genuine repeats still count.
+function planImport() {
+  const list = importFlights(), byKey = new Map();
+  for (const f of live()) { const k = dupKey(f); if (!byKey.has(k)) byKey.set(k, []); byKey.get(k).push(f); }
+  const plan = { list, fresh: [], matched: [] };
+  for (const f of list) {
+    const pool = byKey.get(dupKey(f));
+    if (pool && pool.length) plan.matched.push([pool.shift(), f]); else plan.fresh.push(f);
+  }
+  return plan;
+}
+// Existing flight + values from the file. Returns null when nothing would change.
+function mergeInto(existing, fromFile) {
+  const { _dirty, updated, ...base } = existing;
+  const merged = normalize({ ...base, ...fromFile, id: existing.id, created: existing.created });
+  const canon = o => JSON.stringify(Object.keys(o).sort().map(k => [k, o[k]]));
+  return canon(base) === canon(merged) ? null : merged;
+}
 function renderImportPreview() {
-  const list = importFlights();
-  const existing = new Set(live().map(dupKey));
-  const skip = $('#impSkipDup').checked ? list.filter(f => existing.has(dupKey(f))).length : 0;
+  const plan = planImport(), list = plan.list, mode = $('#impDupMode').value;
+  const changed = mode === 'update' ? plan.matched.filter(([e, f]) => mergeInto(e, f)).length : 0;
+  const skip = mode === 'again' ? 0 : plan.matched.length;
   const noDate = imp.rows.length - list.length;
   const cols = [['date', 'Date'], ['time', 'Time'], ['aircraft', 'Aircraft'], ['type', 'Type'], ['route', 'Route'], ['ifr', 'IFR'], ['role', 'Role'],
     ['fltDay', 'Flt day'], ['fltNight', 'Flt night'], ['total', 'Flt total'], ['actual', 'Act inst'], ['sic', 'SIC'], ['pic', 'PIC']];
@@ -603,19 +639,28 @@ function renderImportPreview() {
     (list.length ? list.slice(0, 8).map(f => `<tr>${cols.map(([k]) => `<td>${esc(val(f, k))}</td>`).join('')}</tr>`).join('')
       : `<tr><td colspan="${cols.length}" class="muted">No rows have a date yet — choose which column is the Date.</td></tr>`) + '</tbody>';
   const n = list.length - skip;
-  $('#impSummary').textContent = `${n} flight${n === 1 ? '' : 's'} to import` +
-    (skip ? `, ${skip} already in logbook` : '') + (noDate ? `, ${noDate} row${noDate === 1 ? '' : 's'} without a readable date skipped` : '') +
-    ` · ${r1(list.reduce((a, f) => a + (f.total || 0), 0)).toFixed(1)} h total`;
-  $('#impGo').disabled = !n;
-  $('#impGo').textContent = n ? `Import ${n} flight${n === 1 ? '' : 's'}` : 'Import';
+  const pl = x => x === 1 ? '' : 's';
+  $('#impSummary').textContent = `${n} new flight${pl(n)}` +
+    (plan.matched.length ? `, ${plan.matched.length} already in logbook (${mode === 'update' ? `${changed} will be updated` : mode === 'again' ? 'importing again' : 'skipped'})` : '') +
+    (noDate ? `, ${noDate} row${pl(noDate)} without a readable date skipped` : '') +
+    ` · file total ${r1(list.reduce((a, f) => a + (f.total || 0), 0)).toFixed(1)} h`;
+  const work = n + changed;
+  $('#impGo').disabled = !work;
+  $('#impGo').textContent = !work ? 'Nothing to import'
+    : changed && n ? `Import ${n} & update ${changed}` : changed ? `Update ${changed} flight${pl(changed)}` : `Import ${n} flight${pl(n)}`;
 }
 function runImport() {
-  const existing = new Set(live().map(dupKey));
-  const list = importFlights().filter(f => !$('#impSkipDup').checked || !existing.has(dupKey(f)));
-  const now = Date.now();
-  list.forEach((f, i) => { const id = uid(); flights[id] = { ...f, id, created: now - i, updated: now, _dirty: true, imported: imp.name }; });
+  const plan = planImport(), mode = $('#impDupMode').value, now = Date.now();
+  const add = mode === 'again' ? plan.list : plan.fresh;
+  add.forEach((f, i) => { const id = uid(); flights[id] = { ...f, id, created: now - i, updated: now, _dirty: true, imported: imp.name }; });
+  let upd = 0;
+  if (mode === 'update') for (const [e, f] of plan.matched) {
+    const m = mergeInto(e, f);
+    if (m) { flights[e.id] = { ...m, updated: now, _dirty: true }; upd++; }
+  }
   saveLocal(); imp = null; refreshAll(); show('log'); scheduleSync();
-  toast(`Imported ${list.length} flight${list.length === 1 ? '' : 's'}${signedIn() ? ' — uploading to Home Assistant' : ''}.`, 4000);
+  const msg = [add.length && `Imported ${add.length} flight${add.length === 1 ? '' : 's'}`, upd && `updated ${upd}`].filter(Boolean).join(', ');
+  toast(`${msg || 'Nothing changed'}${signedIn() && (add.length || upd) ? ' — uploading to Home Assistant' : ''}.`, 4000);
 }
 
 // ---------- shell ----------
@@ -670,7 +715,7 @@ async function init() {
     renderImportPreview();
   };
   $('#impDateFmt').onchange = renderImportPreview;
-  $('#impSkipDup').onchange = renderImportPreview;
+  $('#impDupMode').onchange = renderImportPreview;
   $('#impGo').onclick = runImport;
   $('#impBack').onclick = $('#impCancel').onclick = () => { imp = null; show('settings'); };
   const theme = store.get('pl.theme', 'auto'); $('#themeSel').value = theme; applyTheme(theme);
