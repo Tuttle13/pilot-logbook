@@ -1,0 +1,22 @@
+name: Pilot Logbook
+version: "1.0.0"
+slug: pilot_logbook
+description: iPad pilot logbook that saves your flights in Home Assistant
+url: https://github.com/Tuttle13/pilot-logbook
+arch:
+  - amd64
+  - aarch64
+  - armv7
+init: false
+startup: application
+boot: auto
+# Needs write access to the Home Assistant config folder to install the integration
+# into custom_components/, and the Core API to post the "restart needed" notice.
+map:
+  - type: homeassistant_config
+    read_only: false
+homeassistant_api: true
+options:
+  auto_restart: false
+schema:
+  auto_restart: bool

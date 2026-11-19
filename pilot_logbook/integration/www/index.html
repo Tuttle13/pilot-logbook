@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pilot Logbook</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Logbook">
+<meta name="theme-color" content="#0d1117">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Pilot Logbook</div>
+  <div class="zulu" id="zulu">--:--Z</div>
+  <button class="sync" id="syncBtn" type="button" title="Sync now"><span class="dot" id="syncDot"></span><span id="syncText">Not signed in</span></button>
+</header>
+
+<main id="app">
+  <!-- LOGBOOK -->
+  <section class="view" id="view-log">
+    <div class="split">
+      <div class="listpane">
+        <div class="listtools">
+          <input type="search" id="search" placeholder="Search aircraft, route, type…" autocomplete="off">
+          <button class="btn primary" id="newBtn" type="button">+ New flight</button>
+        </div>
+        <div class="list" id="list"></div>
+        <div class="listfoot"><span class="muted">Records</span> <b id="recCount">0</b></div>
+      </div>
+      <div class="editpane" id="editpane">
+        <form id="form" class="form" hidden autocomplete="off" novalidate>
+          <div class="formhead">
+            <button class="btn ghost back" type="button" id="backBtn">‹ Logbook</button>
+            <h2 id="formTitle">Enter flight</h2>
+          </div>
+
+          <div class="card entry">
+            <div class="frow">
+              <span class="fl">Flt Date/Time</span>
+              <div class="fv two"><input type="date" name="date" required><input type="time" name="time" class="short"></div>
+            </div>
+            <div class="frow">
+              <span class="fl">Aircraft ID</span>
+              <div class="fv two"><input name="aircraft" list="dl-aircraft" autocapitalize="characters" placeholder="YIW"><input name="type" list="dl-type" autocapitalize="characters" placeholder="Type" class="short" aria-label="Aircraft type"></div>
+            </div>
+            <div class="frow">
+              <span class="fl">Route</span>
+              <div class="fv"><input name="route" list="dl-route" autocapitalize="characters" placeholder="MEL SYD"></div>
+            </div>
+            <div class="frow">
+              <span class="fl">Rules</span>
+              <div class="fv toggles">
+                <label class="tog"><span>IFR</span><input type="checkbox" name="ifr" role="switch"><i></i></label>
+                <label class="tog"><span>VFR</span><input type="checkbox" name="vfr" role="switch"><i></i></label>
+              </div>
+            </div>
+            <div class="frow">
+              <span class="fl">Role</span>
+              <div class="fv"><select name="role"><option>SIC</option><option>PIC</option></select></div>
+            </div>
+          </div>
+
+          <div class="card entry times">
+            <div class="trow thead"><span></span><span>Day</span><span>Night</span><span>Total</span></div>
+            <div id="timeRows"></div>
+          </div>
+
+          <div class="actions">
+            <button class="btn danger" type="button" id="delBtn">Delete</button>
+            <span class="grow"></span>
+            <button class="btn" type="button" id="saveLeg">Save &amp; next sector</button>
+            <button class="btn primary" type="submit">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <!-- TOTALS -->
+  <section class="view" id="view-totals" hidden>
+    <div class="page">
+      <h2>Totals</h2>
+      <div class="tablewrap"><table class="tbl" id="totalsTbl"></table></div>
+      <h3>By aircraft type</h3>
+      <div class="tablewrap"><table class="tbl" id="typeTbl"></table></div>
+    </div>
+  </section>
+
+  <!-- CSV IMPORT -->
+  <section class="view" id="view-import" hidden>
+    <div class="page">
+      <div class="formhead">
+        <button class="btn ghost" type="button" id="impBack">‹ Settings</button>
+        <h2 id="impTitle">Import flights</h2>
+      </div>
+      <p class="muted">Check what each column in your file goes into. Columns sent to the same hours field are added together. Text columns sent to the same field are joined.</p>
+      <div class="row">
+        <label class="inline">Dates in the file are
+          <select id="impDateFmt"><option value="auto">Detect automatically</option><option value="ymd">Year-Month-Day</option><option value="mdy">Month/Day/Year (US)</option><option value="dmy">Day/Month/Year</option></select>
+        </label>
+        <label class="inline chk"><input type="checkbox" id="impSkipDup" checked> Skip flights that are already in the logbook</label>
+      </div>
+      <div class="tablewrap"><table class="tbl maptbl" id="impMap"></table></div>
+      <h3>Preview</h3>
+      <div class="tablewrap"><table class="tbl" id="impPreview"></table></div>
+      <div class="actions">
+        <span class="muted" id="impSummary"></span>
+        <span class="grow"></span>
+        <button class="btn" type="button" id="impCancel">Cancel</button>
+        <button class="btn primary" type="button" id="impGo">Import</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section class="view" id="view-settings" hidden>
+    <div class="page narrow">
+      <h2>Settings</h2>
+      <div class="card">
+        <h3>Home Assistant</h3>
+        <p id="authState" class="muted"></p>
+        <div class="row">
+          <button class="btn primary" id="signInBtn" type="button">Sign in with Home Assistant</button>
+          <button class="btn" id="signOutBtn" type="button">Sign out</button>
+          <button class="btn" id="syncNowBtn" type="button">Sync now</button>
+        </div>
+        <details>
+          <summary>Use a long-lived access token instead</summary>
+          <p class="muted">Create one in Home Assistant under your profile → Security → Long-lived access tokens.</p>
+          <div class="row"><input id="tokenInput" type="password" placeholder="Paste token" autocomplete="off"><button class="btn" id="tokenSave" type="button">Use token</button></div>
+        </details>
+      </div>
+      <div class="card">
+        <h3>Your data</h3>
+        <p class="muted" id="dataState"></p>
+        <div class="row">
+          <label class="btn primary filebtn">Import CSV from ZuluLog<input type="file" id="importCsv" accept=".csv,text/csv,text/plain,.txt" hidden></label>
+        </div>
+        <div class="row">
+          <button class="btn" id="exportCsv" type="button">Export CSV</button>
+          <button class="btn" id="exportJson" type="button">Download backup (JSON)</button>
+          <label class="btn filebtn">Restore backup<input type="file" id="importJson" accept="application/json,.json" hidden></label>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Appearance</h3>
+        <div class="row">
+          <select id="themeSel"><option value="auto">Match iPad</option><option value="dark">Dark</option><option value="light">Light</option></select>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<nav class="tabbar">
+  <button type="button" data-view="log" class="on"><span class="ic">✈︎</span>Logbook</button>
+  <button type="button" data-view="totals"><span class="ic">Σ</span>Totals</button>
+  <button type="button" data-view="settings"><span class="ic">⚙︎</span>Settings</button>
+</nav>
+
+<datalist id="dl-aircraft"></datalist>
+<datalist id="dl-type"></datalist>
+<datalist id="dl-route"></datalist>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
