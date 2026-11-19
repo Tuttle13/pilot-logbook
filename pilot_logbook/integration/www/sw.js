@@ -1,6 +1,6 @@
 // Lets the logbook open with no signal. App files: network first, cached copy if offline.
 // API and sign-in requests are never cached.
-const CACHE = 'pilot-logbook-v2';
+const CACHE = 'pilot-logbook-v4';
 const SHELL = ['index.html', 'app.js', 'app.css', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];
 
 self.addEventListener('install', e => {

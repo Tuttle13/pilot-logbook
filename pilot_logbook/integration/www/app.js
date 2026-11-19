@@ -42,7 +42,9 @@ function parseHours(v) {
   v = String(v ?? '').trim(); if (!v) return 0;
   const m = v.match(/^(\d+):(\d{1,2})$/);
   if (m) return r2(+m[1] + +m[2] / 60);
-  const n = parseFloat(v.replace(',', '.'));
+  // "1,654.3" is a thousands separator; a lone comma like "1,3" is a decimal comma.
+  v = /^\d{1,3}(,\d{3})+(\.\d+)?$/.test(v) ? v.replace(/,/g, '') : v.replace(',', '.');
+  const n = Number(v);
   return isFinite(n) && n >= 0 ? r2(n) : NaN;
 }
 function download(name, text, type) {
@@ -67,7 +69,10 @@ function normalize(f) {
   }
   f.night = f.fltNight;
   const e = routeEnds(f.route); f.from = e.from; f.to = e.to;
-  if (!f.role) f.role = f.picDay || f.picNight ? (f.sicDay || f.sicNight ? '' : 'PIC') : 'SIC';
+  if (!f.role) {
+    const pic = f.picDay || f.picNight, sic = f.sicDay || f.sicNight;
+    f.role = pic && !sic ? 'PIC' : sic && !pic ? 'SIC' : '';
+  }
   return f;
 }
 
@@ -83,7 +88,16 @@ const BASE = location.pathname.replace(/[^/]*$/, '');           // e.g. /pilot_l
 const CLIENT_ID = location.origin + BASE;
 const REDIRECT = location.origin + BASE + 'index.html';
 let auth = store.get('pl.auth', null);                           // {access, expires, refresh} or {longLived}
-const signedIn = () => !!(auth && (auth.refresh || auth.longLived));
+// When opened from the "Pilot Log" sidebar panel we're inside Home Assistant's own page,
+// which is already logged in - borrow its login instead of signing in again.
+function panelAuth() {
+  try {
+    if (window.parent === window) return null;
+    const ha = window.parent.document.querySelector('home-assistant');
+    return ha && ha.hass && ha.hass.auth && ha.hass.auth.accessToken ? ha.hass.auth : null;
+  } catch { return null; }
+}
+const signedIn = () => !!(panelAuth() || (auth && (auth.refresh || auth.longLived)));
 
 function startLogin() {
   const state = uid(); store.set('pl.oauthState', state);
@@ -110,6 +124,11 @@ async function handleLoginRedirect() {
   catch { toast('Sign-in failed — please try again.'); }
 }
 async function getToken(force) {
+  const pa = panelAuth();
+  if (pa) {
+    if (force || pa.expired) await pa.refreshAccessToken();
+    return pa.accessToken;
+  }
   if (!auth) return null;
   if (auth.longLived) return auth.longLived;
   if (!force && auth.access && Date.now() < auth.expires - 60e3) return auth.access;
@@ -132,7 +151,7 @@ async function api(method, path, body) {
       body: body ? JSON.stringify(body) : undefined,
     });
     if (r.status === 401 && attempt === 0 && !auth?.longLived) continue;
-    if (r.status === 401) { signOut(true); throw new Error('unauthorized'); }
+    if (r.status === 401) { if (!panelAuth()) signOut(true); throw new Error('unauthorized'); }
     if (r.status === 404) throw new Error('Pilot Logbook integration not found on Home Assistant');
     if (!r.ok) throw new Error('server ' + r.status);
     return r.json();
@@ -251,7 +270,12 @@ function readForm() {
   for (const [p, , tot] of SPLITS) delete f[tot];   // recomputed from splits
   fld('date').classList.toggle('bad', !f.date); if (!f.date) ok = false;
   f.id = editingId; f.created = f.created || Date.now();
-  return ok ? normalize(f) : null;
+  if (!ok) return null;
+  normalize(f);
+  // Single/multi-engine time follows the aircraft type's earlier flights (e.g. B738 -> ME).
+  const prev = f.type && live().find(x => x.id !== f.id && x.type === f.type && (x.me || x.se));
+  if (prev) { f.me = prev.me ? f.total : 0; f.se = prev.me ? 0 : f.total; }
+  return f;
 }
 function openEditor(f, isNew) {
   if (!confirmDiscard()) return false;
@@ -362,12 +386,12 @@ function renderDatalists() {
 }
 
 // ---------- totals ----------
-const TOT_COLS = [['total', 'Flt Time'], ['fltDay', 'Day'], ['night', 'Night'], ['sic', 'SIC'], ['pic', 'PIC'], ['actual', 'Act Inst'], ['ifrN', 'IFR flights'], ['flights', 'Flights']];
+const TOT_COLS = [['total', 'Flt Time'], ['fltDay', 'Day'], ['night', 'Night'], ['sic', 'SIC'], ['pic', 'PIC'], ['actual', 'Act Inst'], ['se', 'SE'], ['me', 'ME'], ['ifrN', 'IFR flights'], ['flights', 'Flights']];
 function sumFlights(list) {
   const s = { flights: list.length, ifrN: 0 };
   for (const [k] of TOT_COLS) if (!(k in s)) s[k] = 0;
   for (const f of list) {
-    for (const k of ['total', 'fltDay', 'night', 'sic', 'pic', 'actual']) s[k] += f[k] || 0;
+    for (const k of ['total', 'fltDay', 'night', 'sic', 'pic', 'actual', 'se', 'me']) s[k] += f[k] || 0;
     if (f.ifr) s.ifrN++;
   }
   return s;
@@ -389,19 +413,24 @@ function renderTotals() {
 
 // ---------- settings / data ----------
 function renderSettings() {
-  const ls = store.get('pl.lastSync', 0);
-  $('#authState').textContent = signedIn()
-    ? `Connected to ${location.host}${auth.longLived ? ' (long-lived token)' : ''}. ${ls ? 'Last sync ' + new Date(ls).toLocaleString() + '.' : ''}`
-    : `Not signed in. Flights are only saved on this iPad until you sign in to ${location.host}.`;
+  const ls = store.get('pl.lastSync', 0), inPanel = !!panelAuth();
+  const last = ls ? ' Last sync ' + new Date(ls).toLocaleString() + '.' : '';
+  $('#authState').textContent = inPanel
+    ? `Using your Home Assistant login.${last}`
+    : signedIn()
+      ? `Connected to ${location.host}${auth.longLived ? ' (long-lived token)' : ''}.${last}`
+      : `Not signed in. Flights are only saved on this device until you sign in to ${location.host}.`;
   $('#signInBtn').hidden = signedIn();
-  $('#signOutBtn').hidden = !signedIn();
+  $('#signOutBtn').hidden = !signedIn() || inPanel;
+  $('details', $('#signInBtn').closest('.card')).hidden = inPanel;
   $('#syncNowBtn').hidden = !signedIn();
   const n = live().length, p = pendingCount();
   $('#dataState').textContent = `${n} flight${n === 1 ? '' : 's'} on this device${p ? `, ${p} waiting to sync` : ', all synced'}.`;
 }
 const CSV_COLS = [['date', 'Date'], ['time', 'Time'], ['aircraft', 'Aircraft ID'], ['type', 'Aircraft Type'], ['route', 'Route'], ['ifr', 'IFR'], ['vfr', 'VFR'], ['role', 'Role'],
   ['fltDay', 'Day Flt Time'], ['fltNight', 'Night Flt Time'], ['total', 'Total Flt Time'], ['aiDay', 'Day Act Inst'], ['aiNight', 'Night Act Inst'],
-  ['sicDay', 'Day SIC Time'], ['sicNight', 'Night SIC Time'], ['picDay', 'Day PIC Time'], ['picNight', 'Night PIC Time'], ['remarks', 'Remarks']];
+  ['sicDay', 'Day SIC Time'], ['sicNight', 'Night SIC Time'], ['picDay', 'Day PIC Time'], ['picNight', 'Night PIC Time'],
+  ['se', 'SE'], ['me', 'ME'], ['simInst', 'Sim Inst'], ['picName', 'PIC Name'], ['sicName', 'SIC Name'], ['remarks', 'Remarks']];
 function exportCsv() {
   const q = v => { v = v == null ? '' : typeof v === 'boolean' ? (v ? 'Y' : '') : String(v); return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
   const lines = [CSV_COLS.map(c => c[1]).join(',')];
@@ -437,9 +466,11 @@ const IMPORT_TARGETS = [
   ['aiDay', 'Act Inst – day'], ['aiNight', 'Act Inst – night'], ['actual', 'Act Inst – total'],
   ['sicDay', 'SIC Time – day'], ['sicNight', 'SIC Time – night'], ['sic', 'SIC Time – total'],
   ['picDay', 'PIC Time – day'], ['picNight', 'PIC Time – night'], ['pic', 'PIC Time – total'],
+  ['se', 'Single-engine time'], ['me', 'Multi-engine time'], ['simInst', 'Sim Inst'],
+  ['picName', 'PIC name (kept, not shown)'], ['sicName', 'SIC name (kept, not shown)'],
   ['remarks', 'Remarks (kept, not shown)'],
 ];
-const HOUR_TARGETS = new Set(['fltDay', 'fltNight', 'total', 'night', 'aiDay', 'aiNight', 'actual', 'sicDay', 'sicNight', 'sic', 'picDay', 'picNight', 'pic']);
+const HOUR_TARGETS = new Set(['fltDay', 'fltNight', 'total', 'night', 'aiDay', 'aiNight', 'actual', 'sicDay', 'sicNight', 'sic', 'picDay', 'picNight', 'pic', 'se', 'me', 'simInst']);
 function guessTarget(header) {
   const h = header.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   const dn = (day, night, tot) => /\bnight\b/.test(h) ? night : /\bday\b/.test(h) ? day : tot;
@@ -452,6 +483,11 @@ function guessTarget(header) {
   if (/role/.test(h)) return 'role';
   if (/^ifr$/.test(h)) return 'ifr';
   if (/^vfr$/.test(h)) return 'vfr';
+  if (/^se$|single ?engine/.test(h)) return 'se';
+  if (/^me$|multi ?engine/.test(h)) return 'me';
+  if (/sim(ulated)? inst|hood/.test(h)) return 'simInst';
+  if (/\bpic\b.*name|captain name/.test(h)) return 'picName';
+  if (/\bsic\b.*name|f ?o name|co ?pilot name/.test(h)) return 'sicName';
   if (/\bsic\b|co ?pilot/.test(h)) return dn('sicDay', 'sicNight', 'sic');
   if (/\bpic\b|captain/.test(h) && !/name|ccy|currency|picus/.test(h)) return dn('picDay', 'picNight', 'pic');
   if (/act(ual)? inst|^ai$|\bimc\b/.test(h)) return dn('aiDay', 'aiNight', 'actual');
@@ -606,6 +642,7 @@ async function init() {
   for (const f of Object.values(flights)) if (!f.deleted && f.fltDay == null) { normalize(f); migrated = true; }
   if (migrated) saveLocal();
 
+  $('#search').value = '';   // browsers sometimes autofill/restore this box, which would hide flights
   buildForm(); wireForm();
   $$('.tabbar button').forEach(b => b.onclick = () => show(b.dataset.view));
   $('#search').oninput = () => { listLimit = 300; renderList(); };
