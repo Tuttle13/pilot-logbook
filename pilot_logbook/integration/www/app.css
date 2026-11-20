@@ -234,3 +234,30 @@ body.editing .topbar #menuBtn .menu-ic { display: none; }
 .muted.small { font-size: 13px; margin: 10px 0 0; }
 #crewRows input[readonly] { background: var(--panel2); color: var(--muted); }
 #crewRows button[disabled] { opacity: .35; cursor: default; }
+
+/* ---- 2.2.2: denser logbook list (more flights per screen, like ZuluLog) ---- */
+.item { padding: 6px 12px 6px 6px; line-height: 1.2; }
+.item b { font-size: 16px; }
+.item span { font-size: 13px; }
+.item .t { font-size: 17px; gap: 8px; }
+.item .x b { font-size: 15px; } .item .x span { font-size: 12px; }
+.item .s svg { width: 19px; height: 19px; }
+.sq { width: 10px; height: 10px; }
+
+/* ---- 2.2.2: phone portrait (e.g. Galaxy S22 Ultra) ---- */
+@media (max-width: 700px) {
+  .form { padding: 6px 8px 0; }
+  .card.entry { padding: 2px 10px; }
+  .card.entry.top { grid-template-columns: 1fr 1fr; column-gap: 10px; }
+  .card.entry.top .frow:not(.side):not(.wide) { grid-column: 1 / -1; }
+  .card.entry.top .frow.side { grid-template-columns: 44px 1fr; order: 1; }
+  .card.entry.top .frow.wide, .card.entry.top .frow:not(.side) { grid-template-columns: 82px 1fr; gap: 6px; }
+  .fv .short { flex: 0 0 86px; }
+  .times .trow { grid-template-columns: 50px 1fr 1fr 34px; gap: 5px; }
+  .step { gap: 3px; }
+  .step button { width: 30px; min-height: 40px; font-size: 17px; }
+  .step input { padding: 7px 2px; }
+  .rtot { font-size: 15px; }
+  .savebtn { right: 54px; padding: 8px 16px; }
+  .item { grid-template-columns: 20px 74px 58px 1fr 44px; padding: 6px 8px 6px 2px; }
+}

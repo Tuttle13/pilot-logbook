@@ -1,5 +1,5 @@
 name: Pilot Logbook
-version: "2.2.1"
+version: "2.2.2"
 slug: pilot_logbook
 description: iPad pilot logbook that saves your flights in Home Assistant
 url: https://github.com/Tuttle13/pilot-logbook
