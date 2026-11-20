@@ -7,6 +7,7 @@
  *   fltDay, fltNight, aiDay, aiNight, sicDay, sicNight, picDay, picNight
  * plus derived totals kept for exports/totals: total, night, actual, sic, pic. */
 'use strict';
+const APP_VERSION = '2.0.0';   // keep in step with index.html ?v= and the add-on version
 
 // ---------- field definitions ----------
 const SPLITS = [            // [key prefix, label, derived total key]
@@ -79,7 +80,7 @@ function normalize(f) {
 // ---------- local data ----------
 let flights = store.get('pl.flights', {});      // id -> flight (incl. deleted tombstones)
 const saveLocal = () => { if (!store.set('pl.flights', flights)) toast('Could not save on this device — storage is full or blocked.'); };
-const live = () => Object.values(flights).filter(f => !f.deleted)
+const live = () => Object.values(flights).filter(f => !f.deleted && !f.kind)   // kind = settings records, not flights
   .sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.time || '').localeCompare(a.time || '') || (b.created || 0) - (a.created || 0));
 function putFlight(f) { f.updated = Date.now(); f._dirty = true; flights[f.id] = f; saveLocal(); scheduleSync(300); }
 
@@ -107,7 +108,7 @@ function startLogin() {
     '&state=' + encodeURIComponent(state);
 }
 async function tokenRequest(params) {
-  const r = await fetch('/auth/token', { method: 'POST', body: new URLSearchParams(params) });
+  const r = await fetchT('/auth/token', { method: 'POST', body: new URLSearchParams(params) });
   if (!r.ok) { const e = new Error('token ' + r.status); e.status = r.status; throw e; }
   const j = await r.json();
   auth = { access: j.access_token, expires: Date.now() + (j.expires_in || 1800) * 1000, refresh: j.refresh_token || auth?.refresh };
@@ -142,14 +143,24 @@ function signOut(expired) {
   setSync(expired ? 'bad' : '', expired ? 'Sign in again' : 'Not signed in');
   renderSettings();
 }
+// fetch that gives up instead of hanging (Wi-Fi with no real internet can leave requests open forever)
+function netErr() { const e = new Error('no connection'); e.offline = true; return e; }
+async function fetchT(url, opts = {}, ms = 15000) {
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), ms);
+  try { return await fetch(url, { ...opts, signal: ctl.signal }); }
+  catch (e) { throw netErr(); }
+  finally { clearTimeout(timer); }
+}
 async function api(method, path, body) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const tok = await getToken(attempt > 0);
     if (!tok) throw new Error('not signed in');
-    const r = await fetch('/api/pilot_logbook/' + path, {
+    const r = await fetchT('/api/pilot_logbook/' + path, {
       method, headers: { Authorization: 'Bearer ' + tok, ...(body ? { 'Content-Type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
-    });
+    }, body ? 30000 : 15000);
+    // In-flight / hotel Wi-Fi login pages and Cloudflare error pages come back as HTML: treat as "no connection".
+    if ((r.headers.get('content-type') || '').includes('text/html')) throw netErr();
     if (r.status === 401 && attempt === 0 && !auth?.longLived) continue;
     if (r.status === 401) { if (!panelAuth()) signOut(true); throw new Error('unauthorized'); }
     if (r.status === 404) throw new Error('Pilot Logbook integration not found on Home Assistant');
@@ -160,13 +171,17 @@ async function api(method, path, body) {
 
 // ---------- sync ----------
 let syncing = false, syncTimer = null;
-function setSync(cls, text) { $('#syncDot').className = 'dot ' + cls; $('#syncText').textContent = text; }
+function setSync(cls, text) {
+  $('#syncDot').className = 'dot ' + cls; $('#syncText').textContent = text;
+  $('#syncBtn').classList.toggle('busy', cls === 'busy'); $('#syncBtn').title = text;
+}
 function pendingCount() { return Object.values(flights).filter(f => f._dirty).length; }
+function savedOnDevice() { const p = pendingCount(); return p ? `Saved on iPad · ${p} to sync later` : 'Saved on iPad'; }
 function scheduleSync(ms = 0) { clearTimeout(syncTimer); syncTimer = setTimeout(sync, ms); }
 async function sync() {
   if (syncing) return scheduleSync(2000);
   if (!signedIn()) { setSync(pendingCount() ? 'warn' : '', 'Not signed in'); return; }
-  if (!navigator.onLine) { setSync('warn', `Offline · ${pendingCount()} to sync`); return; }
+  if (!navigator.onLine) { setSync('', savedOnDevice()); return; }
   syncing = true;
   let pushed = 0;
   try {
@@ -194,7 +209,9 @@ async function sync() {
     setSync(p ? 'warn' : 'ok', p ? `${p} to sync` : 'Synced ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
     if (changed) refreshAll();
   } catch (e) {
-    setSync(signedIn() ? 'bad' : '', signedIn() ? `Sync failed · ${pendingCount()} waiting` : 'Sign in again');
+    // No connection (airplane mode, in-flight Wi-Fi): not an error - flights are safe on the iPad and sync later.
+    if (e.offline || e instanceof SyntaxError) setSync('', savedOnDevice());
+    else setSync(signedIn() ? 'bad' : '', signedIn() ? `Sync failed · ${pendingCount()} waiting` : 'Sign in again');
     console.warn('sync', e);
     if (/not found/.test(e.message)) toast(e.message, 5000);
     if (pushed) refreshAll();
@@ -221,12 +238,68 @@ function buildForm() {
       <span class="rtot" id="tot-${p}"></span>
     </div>`).join('');
 }
+// New flights start with the Rules and Role you used last time (IFR / SIC if none yet).
 function blankFlight() {
-  const last = live()[0];
+  const last = store.get('pl.lastChoice', { rules: 'IFR', role: 'SIC' });
   return {
-    id: uid(), created: Date.now(), date: todayLocal(), time: nowHHMM(), role: 'SIC',
-    ifr: last ? !!last.ifr : true, vfr: last ? !!last.vfr : false,
+    id: uid(), created: Date.now(), date: todayLocal(), time: nowHHMM(), role: last.role === 'PIC' ? 'PIC' : 'SIC',
+    ifr: last.rules !== 'VFR', vfr: last.rules === 'VFR',
   };
+}
+
+// ---------- aircraft type from tail rego ----------
+const CFG_TAILS = 'cfg-tailtypes';   // synced settings record: tail -> type chosen by the user
+const tailOverrides = () => (flights[CFG_TAILS] && !flights[CFG_TAILS].deleted && flights[CFG_TAILS].map) || {};
+// Fleet rules: 737-700 / 737-800 / MAX 8 by tail.
+function tailRuleType(tail) {
+  const t = String(tail || '').toUpperCase().trim();
+  if (!/^[A-Z0-9]{3}$/.test(t)) return '';
+  const between = (a, b) => t >= a && t <= b;
+  if (t === 'VBY' || t === 'VBZ' || between('NBP', 'NVW')) return 'B737';
+  if (t === 'REX' || t === 'RQP' || /^(VO|VU|YF|YQ|YW|YI|YV)/.test(t) || between('IJQ', 'IXK')) return 'B738';
+  if (t[0] === '8') return 'B38M';   // 8IA-8IH, 8II-8IP, 8VA-8VF, 8VG-8VK and any other 8xx
+  return '';
+}
+function typeForTail(tail) {
+  const t = String(tail || '').toUpperCase().trim();
+  if (!t) return '';
+  return tailOverrides()[t] || tailRuleType(t) || (live().find(x => x.aircraft === t && x.type) || {}).type || '';
+}
+function setTailOverride(tail, type) {
+  const cur = flights[CFG_TAILS] && !flights[CFG_TAILS].deleted ? flights[CFG_TAILS] : { id: CFG_TAILS, kind: 'config', created: Date.now(), map: {} };
+  putFlight({ ...cur, map: { ...cur.map, [tail]: type } });
+}
+// Change many flights at once (one save to the iPad, then one sync).
+function bulkUpdate(changes) {
+  const now = Date.now();
+  for (const [f, patch] of changes) flights[f.id] = { ...f, ...patch, updated: now, _dirty: true };
+  if (changes.length) { saveLocal(); refreshAll(); scheduleSync(300); }
+}
+
+// ---------- grey suggestions (double-tap to use) ----------
+// Suggestions only come from a flight on the SAME calendar day as the one being entered:
+// the flight you saved most recently if it's that day, otherwise that day's latest flight.
+// The first entry of a day gets no suggestions.
+function suggestionSource(date) {
+  if (!date) return null;
+  const last = flights[store.get('pl.lastSaved', '')];
+  if (last && !last.deleted && !last.kind && last.date === date && last.id !== editingId) return last;
+  return live().find(f => f.date === date && f.id !== editingId) || null;
+}
+const reverseRoute = r => String(r || '').trim().split(/\s+/).filter(Boolean).reverse().join(' ');
+let suggestOn = false;   // only for new entries, not when editing an existing flight
+function setSuggestions(isNew) {
+  if (isNew !== undefined) suggestOn = !!isNew;
+  const src = suggestOn ? suggestionSource(fld('date').value) : null;
+  const ac = src && src.aircraft ? src.aircraft : '', rt = src && src.route ? reverseRoute(src.route) : '';
+  fld('aircraft').placeholder = ac; fld('aircraft').dataset.sugg = ac;
+  fld('route').placeholder = rt; fld('route').dataset.sugg = rt;
+}
+function acceptSuggestion(input) {
+  if (input.value.trim() || !input.dataset.sugg) return;
+  input.value = input.dataset.sugg;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
 }
 function updateRowTotals() {
   for (const [p] of SPLITS) {
@@ -253,7 +326,7 @@ const MORE_NUM = ['se', 'me', 'simInst'], MORE_TXT = ['picName', 'sicName'];
 function fillForm(f) {
   for (const k of ['date', 'time', 'aircraft', 'type', 'route']) fld(k).value = f[k] ?? '';
   fld('role').value = f.role === 'PIC' ? 'PIC' : 'SIC';
-  fld('ifr').checked = !!f.ifr; fld('vfr').checked = !!f.vfr;
+  fld('rules').value = f.vfr && !f.ifr ? 'VFR' : 'IFR';
   for (const k of SPLIT_KEYS) fld(k).value = f[k] ? fmtH(f[k]) : '';
   for (const k of MORE_NUM) fld(k).value = f[k] ? fmtH(f[k]) : '';
   for (const k of MORE_TXT) fld(k).value = f[k] || '';
@@ -269,7 +342,7 @@ function readForm() {
   let ok = true;
   f.date = fld('date').value; f.time = fld('time').value;
   for (const k of ['aircraft', 'type', 'route']) f[k] = fld(k).value.trim().toUpperCase().replace(/\s+/g, ' ');
-  f.role = fld('role').value; f.ifr = fld('ifr').checked; f.vfr = fld('vfr').checked;
+  f.role = fld('role').value; f.ifr = fld('rules').value === 'IFR'; f.vfr = fld('rules').value === 'VFR';
   for (const k of SPLIT_KEYS) {
     const v = parseHours(fld(k).value), bad = isNaN(v);
     fld(k).classList.toggle('bad', bad); if (bad) ok = false;
@@ -297,16 +370,22 @@ function openEditor(f, isNew) {
   if (!confirmDiscard()) return false;
   editingId = f.id;
   fillForm(f);
-  $('#formTitle').textContent = isNew ? 'Enter flight' : 'Edit flight';
+  setSuggestions(!!isNew);
+  $('#viewTitle').textContent = isNew ? 'Enter Flight' : 'Edit Flight';
   $('#delBtn').hidden = !!isNew;
   form.hidden = false;
   $('.split').classList.add('editing');
+  document.body.classList.add('editing');
+  $('#searchBtn').hidden = true; $('#menu').hidden = true;
   $('#editpane').scrollTop = 0;
   return true;
 }
 function closeEditor() {
   editingId = null; form.hidden = true; formDirty = false;
   $('.split').classList.remove('editing');
+  document.body.classList.remove('editing');
+  $('#viewTitle').textContent = 'Pilot Logbook';
+  $('#searchBtn').hidden = $('#view-log').hidden;
 }
 function confirmDiscard() { return !formDirty || confirm('Discard your unsaved changes to this flight?'); }
 
@@ -315,11 +394,13 @@ function save(next) {
   if (!f) { toast('Please fix the highlighted fields.'); return; }
   const wasNew = !flights[f.id];
   putFlight(f); formDirty = false;
+  store.set('pl.lastChoice', { rules: f.vfr && !f.ifr ? 'VFR' : 'IFR', role: f.role });
+  store.set('pl.lastSaved', f.id);
   refreshAll();
   toast(wasNew ? 'Flight saved' : 'Flight updated');
   if (next === 'leg') {
     const n = blankFlight();
-    Object.assign(n, { date: f.date, aircraft: f.aircraft, type: f.type, role: f.role, ifr: f.ifr, vfr: f.vfr, route: f.to ? f.to + ' ' : '' });
+    n.date = f.date;                 // aircraft and route are offered as grey suggestions
     openEditor(n, true);
   } else closeEditor();
 }
@@ -333,10 +414,25 @@ function wireForm() {
   });
   form.addEventListener('change', e => {
     const t = e.target;
-    if (t.name === 'aircraft' && t.value) {          // fill type from the last flight in that aircraft
-      const ac = t.value.trim().toUpperCase();
-      const prev = live().find(x => x.aircraft === ac && x.type);
-      if (prev) fld('type').value = prev.type;
+    if (t.name === 'date') setSuggestions();         // changing the date changes which day's flights are suggested
+    if (t.name === 'aircraft') {                    // fill the type from your choice for this tail, the fleet rules, or history
+      t.value = t.value.trim().toUpperCase();
+      if (t.value) { const ty = typeForTail(t.value); if (ty) fld('type').value = ty; }
+    }
+    if (t.name === 'type') {
+      const ty = t.value.trim().toUpperCase(), ac = fld('aircraft').value.trim().toUpperCase();
+      t.value = ty;
+      const ok = !ty || /^[A-Z0-9]{3,4}$/.test(ty);
+      t.classList.toggle('bad', !ok);
+      if (!ok) { toast('Aircraft type should be 3 or 4 letters/numbers, e.g. B738.'); return; }
+      if (ty && ac && ty !== typeForTail(ac)) {
+        const others = live().filter(x => x.aircraft === ac && x.id !== editingId && x.type !== ty);
+        if (confirm(`Use ${ty} for ${ac} from now on?` + (others.length ? `\n\nThis also changes the type on your ${others.length} other ${ac} flight${others.length === 1 ? '' : 's'}.` : ''))) {
+          setTailOverride(ac, ty);
+          bulkUpdate(others.map(x => [x, { type: ty }]));
+          toast(`${ac} set to ${ty}` + (others.length ? ` on ${others.length + 1} flights` : ''));
+        }
+      }
     }
     if (t.name === 'role') {
       const other = t.value === 'PIC' ? 'sic' : 'pic';
@@ -355,9 +451,17 @@ function wireForm() {
     if (b.dataset.step.startsWith('flt')) mirrorSic();
     updateRowTotals();
   });
+  // Double-tap a grey suggestion (Aircraft ID / Route) to use it. A single tap just lets you type.
+  for (const name of ['aircraft', 'route']) {
+    const inp = fld(name); let lastTap = 0;
+    inp.addEventListener('pointerup', () => {
+      const now = Date.now();
+      if (now - lastTap < 400) { acceptSuggestion(inp); lastTap = 0; } else lastTap = now;
+    });
+    inp.addEventListener('dblclick', () => acceptSuggestion(inp));
+  }
   form.addEventListener('submit', e => { e.preventDefault(); save(); });
   $('#saveLeg').onclick = () => save('leg');
-  $('#backBtn').onclick = () => { if (confirmDiscard()) closeEditor(); };
   $('#delBtn').onclick = () => {
     const f = flights[editingId]; if (!f) return;
     if (!confirm(`Delete the ${f.date} ${f.route || ''} flight? It will be removed from Home Assistant too.`)) return;
@@ -374,20 +478,22 @@ function renderList() {
   $('#recCount').textContent = all.length;
   const rows = q ? all.filter(f => [f.date, f.aircraft, f.type, f.route, f.role].some(v => String(v || '').toLowerCase().includes(q))) : all;
   if (!rows.length) {
-    $('#list').innerHTML = `<div class="listempty">${all.length ? 'No flights match your search.' : 'No flights yet.<br>Import your ZuluLog logbook from Settings, or tap <b>+ New flight</b>.'}</div>`;
+    $('#list').innerHTML = `<div class="listempty">${all.length ? 'No flights match your search.' : 'No flights yet.<br>Import your ZuluLog logbook from Settings, or tap <b>+</b> to log a flight.'}</div>`;
     return;
   }
+  const SYNC_IC = '<svg viewBox="0 0 24 24" aria-label="Not synced yet"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9L20 16M20 20v-4h-4"/></svg>';
   const html = rows.slice(0, listLimit).map(f => {
     const d = f.date ? new Date(f.date + 'T12:00') : null;
-    const ai = r1(f.actual);
+    const ai = r1(f.actual), tot = r1(f.total);
+    const nightPct = tot ? Math.min(100, Math.round((f.night || 0) / tot * 100)) : 0;   // dark part of the square = night share
     return `<div class="item" data-id="${esc(f.id)}">
-      <div class="s">${f._dirty ? '<span class="pend" title="Not synced yet">●</span>' : ''}</div>
+      <div class="s">${f._dirty ? SYNC_IC : ''}</div>
       <div class="d"><b>${d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '–'}</b><span>${d ? d.getFullYear() + ' ' + d.toLocaleDateString('en-US', { weekday: 'short' }) : ''}</span></div>
-      <div class="t">${r1(f.total).toFixed(1)}</div>
+      <div class="t"><span class="sq"><i style="height:${nightPct}%"></i></span>${tot.toFixed(1)}</div>
       <div class="ac"><b>${esc(f.type || '--')}</b><span>${esc(f.aircraft || '--')}</span></div>
-      <div class="rt"><b>${esc(f.route || '--')}</b></div>
-      <div class="rl"><b>${esc(f.role || '')}</b></div>
-      <div class="ai">${ai ? 'AI:' + ai.toFixed(1) : ''}</div>
+      <div class="rt"><b>${esc(f.route || '--')}</b><span>--</span></div>
+      <div class="rl"><b>${esc(f.role || '--')}</b><span>--</span></div>
+      <div class="x"><b>&nbsp;</b><span>${ai ? 'AI:' + ai.toFixed(1) : '&nbsp;'}</span></div>
     </div>`;
   }).join('') + (rows.length > listLimit ? `<button type="button" class="btn more" id="moreBtn">Show more (${rows.length - listLimit} older)</button>` : '');
   $('#list').innerHTML = html;
@@ -594,6 +700,7 @@ function importFlights() {
       else f[t] = f[t] ? f[t] + '; ' + v : v;
     });
     if (!f.route && (from || to)) f.route = [from, to].filter(Boolean).join(' ');
+    if (f.aircraft && !f.type) f.type = typeForTail(f.aircraft);   // fill missing types from the fleet rules
     if (f.date) out.push(normalize(f));
   }
   return out;
@@ -663,13 +770,36 @@ function runImport() {
   toast(`${msg || 'Nothing changed'}${signedIn() && (add.length || upd) ? ' — uploading to Home Assistant' : ''}.`, 4000);
 }
 
+// Apply the fleet rules (and your per-tail choices) to every past flight, after showing what will change.
+function fixPastTypes() {
+  const ov = tailOverrides(), changes = [], fixes = new Map();
+  let blank = 0, wrong = 0;
+  for (const f of live()) {
+    const tail = String(f.aircraft || '').toUpperCase().trim();
+    const want = ov[tail] || tailRuleType(tail);
+    if (!want || want === f.type) continue;
+    if (f.type) { wrong++; const k = `${tail}: ${f.type} → ${want}`; fixes.set(k, (fixes.get(k) || 0) + 1); } else blank++;
+    changes.push([f, { type: want }]);
+  }
+  const examples = [...fixes].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, n]) => `${k} (${n} flight${n === 1 ? '' : 's'})`);
+  if (!changes.length) { toast('All aircraft types already match the fleet rules.'); return; }
+  const msg = `Update the aircraft type on ${changes.length} flight${changes.length === 1 ? '' : 's'}?\n\n` +
+    `• ${blank} with no type will get one\n• ${wrong} will be corrected` + (examples.length ? `\n\nFor example:\n${examples.join('\n')}` : '');
+  if (!confirm(msg)) return;
+  bulkUpdate(changes);
+  toast(`Updated the aircraft type on ${changes.length} flights.`, 4000);
+}
+
 // ---------- shell ----------
 function show(view) {
   if (view !== 'log' && !confirmDiscard()) return;
   if (view !== 'log' && formDirty) { formDirty = false; }
   if (view !== 'log' && editingId) closeEditor();
   $$('.view').forEach(v => { v.hidden = v.id !== 'view-' + view; });
-  $$('.tabbar button').forEach(b => b.classList.toggle('on', b.dataset.view === view));
+  $$('.tabbar button[data-view], .menu button').forEach(b => b.classList.toggle('on', b.dataset.view === view));
+  $('#menu').hidden = true;
+  $('#viewTitle').textContent = { log: 'Pilot Logbook', totals: 'Totals', settings: 'Settings', import: 'Import flights' }[view] || 'Pilot Logbook';
+  $('#searchBtn').hidden = view !== 'log';
   if (view === 'totals') renderTotals();
   if (view === 'settings') renderSettings();
 }
@@ -678,18 +808,38 @@ function refreshAll() {
   if (!$('#view-totals').hidden) renderTotals();
   renderSettings();
 }
-function applyTheme(t) { if (t === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', t); }
+const systemDark = () => { try { return matchMedia('(prefers-color-scheme: dark)').matches; } catch { return false; } };
+function applyTheme(t) {
+  const root = document.documentElement;
+  if (t === 'auto') root.removeAttribute('data-theme'); else root.setAttribute('data-theme', t);
+  const dark = t === 'dark' || (t === 'auto' && systemDark());
+  root.setAttribute('data-dark', dark ? '1' : '0');
+  $('#themeBtn').title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+}
+function setTheme(t) { store.set('pl.theme', t); $('#themeSel').value = t; applyTheme(t); }
 function tickZulu() { const d = new Date(); $('#zulu').textContent = d.toISOString().slice(11, 16).replace(':', '') + 'Z'; }
 
 async function init() {
   // Older records saved by the first version of this app get their Day/Night split filled in.
   let migrated = false;
-  for (const f of Object.values(flights)) if (!f.deleted && f.fltDay == null) { normalize(f); migrated = true; }
+  for (const f of Object.values(flights)) if (!f.deleted && !f.kind && f.fltDay == null) { normalize(f); migrated = true; }
   if (migrated) saveLocal();
 
   $('#search').value = '';   // browsers sometimes autofill/restore this box, which would hide flights
   buildForm(); wireForm();
-  $$('.tabbar button').forEach(b => b.onclick = () => show(b.dataset.view));
+  $$('.tabbar button[data-view], .menu button').forEach(b => b.onclick = () => show(b.dataset.view));
+  $('#menuBtn').onclick = e => {
+    e.stopPropagation();
+    if (document.body.classList.contains('editing')) { if (confirmDiscard()) closeEditor(); return; }   // back arrow
+    $('#menu').hidden = !$('#menu').hidden;
+  };
+  $('#fixTypes').onclick = fixPastTypes;
+  document.addEventListener('click', e => { if (!e.target.closest('#menu')) $('#menu').hidden = true; });
+  $('#themeBtn').onclick = () => setTheme(document.documentElement.getAttribute('data-dark') === '1' ? 'light' : 'dark');
+  $('#searchBtn').onclick = () => {
+    const box = $('#listtools'); box.hidden = !box.hidden;
+    if (box.hidden) { $('#search').value = ''; renderList(); } else $('#search').focus();
+  };
   $('#search').oninput = () => { listLimit = 300; renderList(); };
   $('#newBtn').onclick = () => openEditor(blankFlight(), true);
   $('#list').onclick = e => {
@@ -719,7 +869,8 @@ async function init() {
   $('#impGo').onclick = runImport;
   $('#impBack').onclick = $('#impCancel').onclick = () => { imp = null; show('settings'); };
   const theme = store.get('pl.theme', 'auto'); $('#themeSel').value = theme; applyTheme(theme);
-  $('#themeSel').onchange = e => { store.set('pl.theme', e.target.value); applyTheme(e.target.value); };
+  $('#themeSel').onchange = e => setTheme(e.target.value);
+  try { matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme(store.get('pl.theme', 'auto'))); } catch { /* old browsers */ }
   window.addEventListener('beforeunload', e => { if (formDirty) { e.preventDefault(); e.returnValue = ''; } });
   window.addEventListener('online', () => scheduleSync());
   document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleSync(); });
@@ -731,7 +882,7 @@ async function init() {
   renderSettings();
   sync();
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.register('sw.js?v=' + APP_VERSION).catch(() => {});   // versioned so Cloudflare can't serve an old one
   }
 }
 init();
