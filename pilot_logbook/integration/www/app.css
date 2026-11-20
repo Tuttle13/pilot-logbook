@@ -232,3 +232,5 @@ body.editing .topbar #menuBtn .menu-ic { display: none; }
 #moreFields .times .trow { border-bottom: 1px solid var(--line); }
 @media (max-width: 1120px) { body.editing .zulu { display: none; } }
 .muted.small { font-size: 13px; margin: 10px 0 0; }
+#crewRows input[readonly] { background: var(--panel2); color: var(--muted); }
+#crewRows button[disabled] { opacity: .35; cursor: default; }

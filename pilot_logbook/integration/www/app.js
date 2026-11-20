@@ -7,7 +7,7 @@
  *   fltDay, fltNight, aiDay, aiNight, sicDay, sicNight, picDay, picNight
  * plus derived totals kept for exports/totals: total, night, actual, sic, pic. */
 'use strict';
-const APP_VERSION = '2.2.0';   // keep in step with index.html ?v= and the add-on version
+const APP_VERSION = '2.2.1';   // keep in step with index.html ?v= and the add-on version
 
 // ---------- field definitions ----------
 const SPLITS = [            // [key prefix, label, derived total key]
@@ -223,7 +223,7 @@ async function sync() {
 
 // ---------- entry form ----------
 const form = $('#form');
-let editingId = null, formDirty = false;
+let editingId = null, formDirty = false, formError = '';
 const fld = n => form.elements.namedItem(n);
 
 function buildForm() {
@@ -241,6 +241,9 @@ function buildForm() {
     </div>`;
   $('#timeRows').innerHTML = SPLITS.filter(([p]) => p === 'flt' || p === 'ai').map(row).join('');
   $('#crewRows').innerHTML = SPLITS.filter(([p]) => p === 'sic' || p === 'pic').map(row).join('');
+  // SIC / PIC Time are filled from Flt Time automatically, so they're display-only.
+  $$('#crewRows input').forEach(i => { i.readOnly = true; i.tabIndex = -1; });
+  $$('#crewRows button[data-step]').forEach(b => { b.disabled = true; });
 }
 // New flights start with the Rules and Role you used last time (IFR / SIC if none yet).
 function blankFlight() {
@@ -352,6 +355,18 @@ function readForm() {
     fld(k).classList.toggle('bad', bad); if (bad) ok = false;
     f[k] = bad ? 0 : v;
   }
+  // Safeguard: your crew time always equals the flight time for the role you picked.
+  if (ok) {
+    const own = f.role === 'PIC' ? 'pic' : 'sic', other = own === 'pic' ? 'sic' : 'pic';
+    f[own + 'Day'] = f.fltDay; f[own + 'Night'] = f.fltNight;
+    f[other + 'Day'] = 0; f[other + 'Night'] = 0;
+  }
+  // Safeguard: every flight gets an aircraft type (from your per-tail choice, the fleet rules or history).
+  if (f.aircraft && !f.type) { f.type = typeForTail(f.aircraft); fld('type').value = f.type; }
+  const typeOk = !f.aircraft || /^[A-Z0-9]{3,4}$/.test(f.type || '');
+  fld('type').classList.toggle('bad', !typeOk);
+  formError = typeOk ? '' : `Enter the aircraft type for ${f.aircraft} (3–4 letters/numbers, e.g. B738).`;
+  if (!typeOk) ok = false;
   for (const [p, , tot] of SPLITS) delete f[tot];   // recomputed from splits
   for (const k of MORE_NUM) {
     const raw = fld(k).value.trim(), v = parseHours(raw), bad = isNaN(v);
@@ -395,7 +410,7 @@ function confirmDiscard() { return !formDirty || confirm('Discard your unsaved c
 
 function save(next) {
   const f = readForm();
-  if (!f) { toast('Please fix the highlighted fields.'); return; }
+  if (!f) { toast(formError || 'Please fix the highlighted fields.', 4500); return; }
   const wasNew = !flights[f.id];
   putFlight(f); formDirty = false;
   store.set('pl.lastChoice', { rules: f.vfr && !f.ifr ? 'VFR' : 'IFR', role: f.role });
