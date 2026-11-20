@@ -12,7 +12,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="icon" type="image/png" href="icon-192.png">
-<link rel="stylesheet" href="app.css?v=2.0.0">
+<link rel="stylesheet" href="app.css?v=2.2.0">
 </head>
 <body>
 <header class="topbar">
@@ -51,6 +51,7 @@
       </div>
       <div class="editpane" id="editpane">
         <form id="form" class="form" hidden autocomplete="off" novalidate>
+          <button class="btn primary savebtn" type="submit" id="saveBtn">Save</button>
           <div class="card entry top">
             <div class="frow wide">
               <span class="fl">Flt Date/Time</span>
@@ -81,6 +82,7 @@
 
           <details class="card entry more" id="moreFields">
             <summary>More fields <span class="muted" id="moreHint"></span></summary>
+            <div class="times" id="crewRows"></div>
             <div class="frow"><span class="fl">SE</span><div class="fv"><input name="se" inputmode="decimal" placeholder="Single-engine hours"></div></div>
             <div class="frow"><span class="fl">ME</span><div class="fv"><input name="me" inputmode="decimal" placeholder="Multi-engine hours"></div></div>
             <div class="frow"><span class="fl">Sim Inst</span><div class="fv"><input name="simInst" inputmode="decimal"></div></div>
@@ -88,11 +90,8 @@
             <div class="frow"><span class="fl">SIC Name</span><div class="fv"><input name="sicName" list="dl-names"></div></div>
           </details>
 
-          <div class="actions">
-            <button class="btn danger" type="button" id="delBtn">Delete</button>
-            <span class="grow"></span>
-            <button class="btn" type="button" id="saveLeg">Save &amp; next sector</button>
-            <button class="btn primary" type="submit">Save</button>
+          <div class="actions" id="delBar">
+            <button class="btn danger" type="button" id="delBtn">Delete this flight</button>
           </div>
         </form>
       </div>
@@ -123,6 +122,7 @@
         </label>
         <label class="inline">Flights already in the logbook
           <select id="impDupMode">
+            <option value="sync">Match this file exactly (full ZuluLog export)</option>
             <option value="skip">Skip them</option>
             <option value="update">Update them with this file's values</option>
             <option value="again">Import them again as extra copies</option>
@@ -172,6 +172,15 @@
           <label class="btn filebtn">Restore backup<input type="file" id="importJson" accept="application/json,.json" hidden></label>
         </div>
       </div>
+      <div class="card" id="casaCard">
+        <h3>CASA logbook</h3>
+        <p class="muted" id="casaState">Checking…</p>
+        <div class="row">
+          <button class="btn primary" id="casaDownload" type="button">Download CASA logbook</button>
+          <label class="btn filebtn" id="casaUploadBtn">Replace CASA workbook<input type="file" id="casaUpload" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden></label>
+        </div>
+        <p class="muted small">Your Excel Pilot Logbook is kept on your Home Assistant server and rebuilt automatically every time a flight is saved: your original rows stay as they are, and every flight after them is added in the CASA columns (with the captain's name from PIC Name, if you've entered one).</p>
+      </div>
       <div class="card">
         <h3>Appearance</h3>
         <div class="row">
@@ -201,6 +210,6 @@
 <datalist id="dl-names"></datalist>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script src="app.js?v=2.0.0"></script>
+<script src="app.js?v=2.2.0"></script>
 </body>
 </html>

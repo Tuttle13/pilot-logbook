@@ -220,3 +220,15 @@ body.editing .topbar #menuBtn .menu-ic { display: none; }
   .card.entry.top { grid-template-columns: 1fr; }
   .card.entry.top .frow.side { grid-template-columns: 1fr; }
 }
+
+/* ---- 2.0.1: Save button top-right of the entry area; Delete only when editing ---- */
+.form { position: relative; }
+.savebtn { position: absolute; top: 8px; left: calc(100% + 14px); min-width: 96px; padding: 12px 22px; font-size: 17px; z-index: 6; }
+/* not enough room beside the form (portrait / narrow): put Save in the blue title bar instead */
+@media (max-width: 1120px) {
+  .savebtn { position: fixed; left: auto; right: 64px; top: calc(env(safe-area-inset-top) + 9px); background: #fff; color: var(--zl-blue); border-color: #fff; padding: 9px 18px; }
+}
+.form .actions { justify-content: flex-start; }
+#moreFields .times .trow { border-bottom: 1px solid var(--line); }
+@media (max-width: 1120px) { body.editing .zulu { display: none; } }
+.muted.small { font-size: 13px; margin: 10px 0 0; }

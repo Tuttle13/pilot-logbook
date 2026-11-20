@@ -7,7 +7,7 @@
  *   fltDay, fltNight, aiDay, aiNight, sicDay, sicNight, picDay, picNight
  * plus derived totals kept for exports/totals: total, night, actual, sic, pic. */
 'use strict';
-const APP_VERSION = '2.0.0';   // keep in step with index.html ?v= and the add-on version
+const APP_VERSION = '2.2.0';   // keep in step with index.html ?v= and the add-on version
 
 // ---------- field definitions ----------
 const SPLITS = [            // [key prefix, label, derived total key]
@@ -208,6 +208,7 @@ async function sync() {
     const p = pendingCount();
     setSync(p ? 'warn' : 'ok', p ? `${p} to sync` : 'Synced ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
     if (changed) refreshAll();
+    if (pushed) setTimeout(() => refreshCasa(true), 8000);   // the server rebuilds the CASA workbook a few seconds after changes
   } catch (e) {
     // No connection (airplane mode, in-flight Wi-Fi): not an error - flights are safe on the iPad and sync later.
     if (e.offline || e instanceof SyntaxError) setSync('', savedOnDevice());
@@ -226,7 +227,8 @@ let editingId = null, formDirty = false;
 const fld = n => form.elements.namedItem(n);
 
 function buildForm() {
-  $('#timeRows').innerHTML = SPLITS.map(([p, label]) => `
+  // Flt Time and Act Inst on the main page; SIC / PIC Time (filled automatically) live under More fields.
+  const row = ([p, label]) => `
     <div class="trow" data-row="${p}">
       <span class="fl">${label}</span>
       ${['Day', 'Night'].map(dn => `
@@ -236,7 +238,9 @@ function buildForm() {
           <button type="button" data-step="${p}${dn}" data-d="0.1" aria-label="plus 0.1">+</button>
         </span>`).join('')}
       <span class="rtot" id="tot-${p}"></span>
-    </div>`).join('');
+    </div>`;
+  $('#timeRows').innerHTML = SPLITS.filter(([p]) => p === 'flt' || p === 'ai').map(row).join('');
+  $('#crewRows').innerHTML = SPLITS.filter(([p]) => p === 'sic' || p === 'pic').map(row).join('');
 }
 // New flights start with the Rules and Role you used last time (IFR / SIC if none yet).
 function blankFlight() {
@@ -372,7 +376,7 @@ function openEditor(f, isNew) {
   fillForm(f);
   setSuggestions(!!isNew);
   $('#viewTitle').textContent = isNew ? 'Enter Flight' : 'Edit Flight';
-  $('#delBtn').hidden = !!isNew;
+  $('#delBar').hidden = !!isNew;
   form.hidden = false;
   $('.split').classList.add('editing');
   document.body.classList.add('editing');
@@ -461,7 +465,6 @@ function wireForm() {
     inp.addEventListener('dblclick', () => acceptSuggestion(inp));
   }
   form.addEventListener('submit', e => { e.preventDefault(); save(); });
-  $('#saveLeg').onclick = () => save('leg');
   $('#delBtn').onclick = () => {
     const f = flights[editingId]; if (!f) return;
     if (!confirm(`Delete the ${f.date} ${f.route || ''} flight? It will be removed from Home Assistant too.`)) return;
@@ -536,6 +539,7 @@ function renderTotals() {
 
 // ---------- settings / data ----------
 function renderSettings() {
+  try { refreshCasa(); } catch (e) { console.warn('casa', e); }
   const ls = store.get('pl.lastSync', 0), inPanel = !!panelAuth();
   const last = ls ? ' Last sync ' + new Date(ls).toLocaleString() + '.' : '';
   $('#authState').textContent = inPanel
@@ -700,7 +704,10 @@ function importFlights() {
       else f[t] = f[t] ? f[t] + '; ' + v : v;
     });
     if (!f.route && (from || to)) f.route = [from, to].filter(Boolean).join(' ');
-    if (f.aircraft && !f.type) f.type = typeForTail(f.aircraft);   // fill missing types from the fleet rules
+    if (f.aircraft) {                                            // your per-tail choice / fleet rules win over the file's type
+      const tail = f.aircraft.toUpperCase().trim(), ruled = tailOverrides()[tail] || tailRuleType(tail);
+      if (ruled) f.type = ruled; else if (!f.type) f.type = typeForTail(tail);
+    }
     if (f.date) out.push(normalize(f));
   }
   return out;
@@ -730,13 +737,28 @@ function planImport() {
 // Existing flight + values from the file. Returns null when nothing would change.
 function mergeInto(existing, fromFile) {
   const { _dirty, updated, ...base } = existing;
-  const merged = normalize({ ...base, ...fromFile, id: existing.id, created: existing.created });
+  const merged = normalize({ ...base, ...fromFile, id: existing.id, created: fromFile.created ?? existing.created });
   const canon = o => JSON.stringify(Object.keys(o).sort().map(k => [k, o[k]]));
   return canon(base) === canon(merged) ? null : merged;
 }
+// Stable 'created' stamps that keep the file's same-day sector order (the file lists newest first).
+function fileOrderCreated(list) {
+  const seen = {}, m = new Map();
+  for (const f of list) { const i = (seen[f.date] = (seen[f.date] || 0) + 1) - 1; m.set(f, Date.parse(f.date + 'T12:00:00Z') + 1000 - i); }
+  return m;
+}
+// "Match this file": flights from an earlier import that are no longer in the file (deleted or edited in ZuluLog).
+// Flights you entered in this app are never touched.
+function staleImports(plan) {
+  const used = new Set(plan.matched.map(([e]) => e.id));
+  return live().filter(f => f.imported && !used.has(f.id));
+}
 function renderImportPreview() {
   const plan = planImport(), list = plan.list, mode = $('#impDupMode').value;
-  const changed = mode === 'update' ? plan.matched.filter(([e, f]) => mergeInto(e, f)).length : 0;
+  const updating = mode === 'update' || mode === 'sync';
+  const oc = fileOrderCreated(plan.list);
+  const changed = updating ? plan.matched.filter(([e, f]) => mergeInto(e, mode === 'sync' ? { ...f, created: oc.get(f) } : f)).length : 0;
+  const removed = mode === 'sync' ? staleImports(plan) : [];
   const skip = mode === 'again' ? 0 : plan.matched.length;
   const noDate = imp.rows.length - list.length;
   const cols = [['date', 'Date'], ['time', 'Time'], ['aircraft', 'Aircraft'], ['type', 'Type'], ['route', 'Route'], ['ifr', 'IFR'], ['role', 'Role'],
@@ -748,26 +770,83 @@ function renderImportPreview() {
   const n = list.length - skip;
   const pl = x => x === 1 ? '' : 's';
   $('#impSummary').textContent = `${n} new flight${pl(n)}` +
-    (plan.matched.length ? `, ${plan.matched.length} already in logbook (${mode === 'update' ? `${changed} will be updated` : mode === 'again' ? 'importing again' : 'skipped'})` : '') +
+    (plan.matched.length ? `, ${plan.matched.length} already in logbook (${updating ? `${changed} will be updated` : mode === 'again' ? 'importing again' : 'skipped'})` : '') +
+    (removed.length ? `, ${removed.length} earlier-imported flight${pl(removed.length)} no longer in the file will be removed (${removed.slice(0, 3).map(f => `${f.date} ${f.aircraft || ''} ${f.route || ''} ${r1(f.total).toFixed(1)}`).join('; ')}${removed.length > 3 ? '; …' : ''})` : '') +
     (noDate ? `, ${noDate} row${pl(noDate)} without a readable date skipped` : '') +
     ` · file total ${r1(list.reduce((a, f) => a + (f.total || 0), 0)).toFixed(1)} h`;
-  const work = n + changed;
+  const work = n + changed + removed.length;
   $('#impGo').disabled = !work;
   $('#impGo').textContent = !work ? 'Nothing to import'
-    : changed && n ? `Import ${n} & update ${changed}` : changed ? `Update ${changed} flight${pl(changed)}` : `Import ${n} flight${pl(n)}`;
+    : [n && `Import ${n}`, changed && `update ${changed}`, removed.length && `remove ${removed.length}`].filter(Boolean).join(', ').replace(/^./, c => c.toUpperCase());
 }
 function runImport() {
   const plan = planImport(), mode = $('#impDupMode').value, now = Date.now();
+  const updating = mode === 'update' || mode === 'sync';
+  const removed = mode === 'sync' ? staleImports(plan) : [];
+  // keep the file's order (newest first) so same-day sectors list in the right order
+  const oc = fileOrderCreated(plan.list);
   const add = mode === 'again' ? plan.list : plan.fresh;
-  add.forEach((f, i) => { const id = uid(); flights[id] = { ...f, id, created: now - i, updated: now, _dirty: true, imported: imp.name }; });
+  add.forEach(f => { const id = uid(); flights[id] = { ...f, id, created: oc.get(f), updated: now, _dirty: true, imported: imp.name }; });
   let upd = 0;
-  if (mode === 'update') for (const [e, f] of plan.matched) {
-    const m = mergeInto(e, f);
+  if (updating) for (const [e, f] of plan.matched) {
+    const m = mergeInto(e, mode === 'sync' ? { ...f, created: oc.get(f) } : f);
     if (m) { flights[e.id] = { ...m, updated: now, _dirty: true }; upd++; }
   }
+  for (const f of removed) flights[f.id] = { id: f.id, created: f.created, deleted: true, updated: now, _dirty: true };
   saveLocal(); imp = null; refreshAll(); show('log'); scheduleSync();
-  const msg = [add.length && `Imported ${add.length} flight${add.length === 1 ? '' : 's'}`, upd && `updated ${upd}`].filter(Boolean).join(', ');
-  toast(`${msg || 'Nothing changed'}${signedIn() && (add.length || upd) ? ' — uploading to Home Assistant' : ''}.`, 4000);
+  const msg = [add.length && `Imported ${add.length} flight${add.length === 1 ? '' : 's'}`, upd && `updated ${upd}`, removed.length && `removed ${removed.length} stale`].filter(Boolean).join(', ');
+  toast(`${msg || 'Nothing changed'}${signedIn() && (add.length || upd || removed.length) ? ' — uploading to Home Assistant' : ''}.`, 4000);
+}
+
+// ---------- CASA (Excel Pilot Logbook, Australia) workbook ----------
+// The workbook lives on the Home Assistant server and is rebuilt there whenever flights change
+// (see casa.py). The app only shows its status and downloads it.
+let casaInfo = null, casaChecked = 0;
+async function refreshCasa(force) {
+  if (!signedIn() || (!force && Date.now() - casaChecked < 15000)) return renderCasa();
+  casaChecked = Date.now();
+  try { casaInfo = await api('GET', 'casa'); } catch (e) { casaInfo = { error: e.offline ? 'offline' : e.message }; }
+  renderCasa();
+}
+function renderCasa() {
+  const el = $('#casaState'); if (!el) return;
+  const nice = d => new Date(d + 'T12:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+  const i = casaInfo, s = i && i.summary;
+  let text = 'Sign in to see your CASA logbook.';
+  if (signedIn() && !i) text = 'Checking…';
+  else if (i && i.error === 'offline') text = 'Not connected – the CASA logbook is on your Home Assistant server.';
+  else if (i && i.error && !s) text = 'The CASA logbook could not be built: ' + i.error;
+  else if (i && !i.has_template) text = 'No CASA workbook on the server yet.';
+  else if (s) text = `Up to date: your workbook's flights to ${nice(s.cutoff)}, plus ${s.new_flights} flight${s.new_flights === 1 ? '' : 's'} added since (${s.new_hours.toFixed(1)} h).` +
+    (s.retyped && s.retyped.length ? ` ${s.retyped.length} aircraft type${s.retyped.length === 1 ? '' : 's'} corrected.` : '');
+  el.textContent = text;
+  $('#casaDownload').disabled = !(i && i.has_template);
+}
+function wireCasa() {
+  $('#casaDownload').onclick = async () => {
+    try {
+      const tok = await getToken();
+      const r = await fetchT('/api/pilot_logbook/casa.xlsx', { headers: { Authorization: 'Bearer ' + tok } }, 60000);
+      if (!r.ok) throw new Error('server ' + r.status);
+      const blob = await r.blob(), a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = `CASA-Logbook-${todayLocal()}.xlsx`;
+      document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+    } catch (e) { toast(e.offline ? 'Connect to the internet to download the CASA logbook.' : 'Could not download the CASA logbook.', 4000); }
+  };
+  $('#casaUpload').onchange = async e => {
+    const file = e.target.files[0]; e.target.value = ''; if (!file) return;
+    if (!confirm(`Use "${file.name}" as your CASA workbook? The server keeps it and adds every later flight to it automatically.`)) return;
+    try { await uploadCasaTemplate(await file.arrayBuffer()); toast('CASA workbook saved on the server.'); }
+    catch (err) { toast('Could not use that workbook: ' + err.message, 5000); }
+  };
+}
+async function uploadCasaTemplate(bytes) {
+  const tok = await getToken();
+  const r = await fetchT('/api/pilot_logbook/casa/template', { method: 'PUT', headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'application/octet-stream' }, body: bytes }, 120000);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.message || 'server ' + r.status);
+  casaInfo = { has_template: true, summary: j.summary, error: j.error }; casaChecked = Date.now(); renderCasa();
+  return j;
 }
 
 // Apply the fleet rules (and your per-tail choices) to every past flight, after showing what will change.
@@ -834,6 +913,7 @@ async function init() {
     $('#menu').hidden = !$('#menu').hidden;
   };
   $('#fixTypes').onclick = fixPastTypes;
+  wireCasa();
   document.addEventListener('click', e => { if (!e.target.closest('#menu')) $('#menu').hidden = true; });
   $('#themeBtn').onclick = () => setTheme(document.documentElement.getAttribute('data-dark') === '1' ? 'light' : 'dark');
   $('#searchBtn').onclick = () => {

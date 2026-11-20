@@ -57,6 +57,18 @@ The logbook list shows each flight like ZuluLog does: date, flight time, type/re
 
 Imported flights and flights you enter afterwards live in the same logbook. Flights already in the logbook (same date, aircraft, route and flight time) are skipped, so you can re-import a newer ZuluLog export later and only the missing flights are added.
 
+## Your CASA (Excel Pilot Logbook) workbook
+
+Your CASA workbook is kept on your Home Assistant server, in `config/pilot_logbook/`. It is never uploaded anywhere else, and it is not part of this repository.
+
+- **Rebuilt automatically:** every time a flight is saved, the server rebuilds `CASA-Logbook.xlsx`. Your original rows stay exactly as they were, apart from 737-family aircraft types, which are corrected from the fleet rules. Every later flight is added in the CASA columns: date, type, reg., captain (from PIC Name), "Self", route, ME co-pilot / command (or SE) day and night, and instrument. The workbook's own formulas, dashboards and reports carry on.
+- **To get a copy:** in the app, go to **Settings → CASA logbook → Download CASA logbook**.
+- **To change the workbook:** use **Replace CASA workbook** (administrators only). Flights after its last row are added automatically.
+
+## Re-importing a full ZuluLog export
+
+Import it under **Settings → Import CSV from ZuluLog** and choose **Match this file exactly**. Flights are added, updated or removed so the app matches the file. Flights you entered in the app itself are never touched. Aircraft types follow your fleet rules (B737 / B738 / B38M by tail).
+
 ## Where the data lives
 
 Flights are stored in `config/.storage/pilot_logbook.flights` on your Home Assistant server, so they are included in your normal Home Assistant backups.
