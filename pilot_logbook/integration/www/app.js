@@ -7,7 +7,7 @@
  *   fltDay, fltNight, aiDay, aiNight, sicDay, sicNight, picDay, picNight
  * plus derived totals kept for exports/totals: total, night, actual, sic, pic. */
 'use strict';
-const APP_VERSION = '2.2.3';   // keep in step with index.html ?v= and the add-on version
+const APP_VERSION = '2.2.4';   // keep in step with index.html ?v= and the add-on version
 
 // ---------- field definitions ----------
 const SPLITS = [            // [key prefix, label, derived total key]
