@@ -7,7 +7,7 @@
  *   fltDay, fltNight, aiDay, aiNight, sicDay, sicNight, picDay, picNight
  * plus derived totals kept for exports/totals: total, night, actual, sic, pic. */
 'use strict';
-const APP_VERSION = '2.2.2';   // keep in step with index.html ?v= and the add-on version
+const APP_VERSION = '2.2.3';   // keep in step with index.html ?v= and the add-on version
 
 // ---------- field definitions ----------
 const SPLITS = [            // [key prefix, label, derived total key]
@@ -176,13 +176,38 @@ function setSync(cls, text) {
   $('#syncBtn').classList.toggle('busy', cls === 'busy'); $('#syncBtn').title = text;
 }
 function pendingCount() { return Object.values(flights).filter(f => f._dirty).length; }
-function savedOnDevice() { const p = pendingCount(); return p ? `Saved on iPad · ${p} to sync later` : 'Saved on iPad'; }
+const DEVICE = /Android/i.test(navigator.userAgent) ? 'phone' : /iPad|Macintosh/.test(navigator.userAgent) ? 'iPad' : 'this device';
+function savedOnDevice() { const p = pendingCount(); return p ? `Saved on ${DEVICE} · ${p} to sync later` : `Saved on ${DEVICE}`; }
 function scheduleSync(ms = 0) { clearTimeout(syncTimer); syncTimer = setTimeout(sync, ms); }
-async function sync() {
+
+// Wi-Fi that has no internet (e.g. the onboard crew network) can't be told apart from real internet by a web
+// app, so before syncing ask the server for a tiny reply. No answer within a few seconds = no internet: stay quiet,
+// keep the flights on the device, and look again shortly (it syncs by itself once you're back on 4G).
+const PROBE_MS = 4000;
+function giveUpAfter(ms, p) { return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(netErr()), ms))]); }
+async function serverReachable() {
+  try {
+    const tok = await giveUpAfter(PROBE_MS, getToken());
+    if (!tok) return true;                                   // not signed in: let sync() report that
+    const r = await fetchT('/api/', { headers: { Authorization: 'Bearer ' + tok }, cache: 'no-store' }, PROBE_MS);
+    if (r.status === 401) return true;                       // reached Home Assistant; sync() refreshes the sign-in
+    return r.ok && (r.headers.get('content-type') || '').includes('json');   // Wi-Fi login pages come back as HTML
+  } catch (e) {
+    if (e.offline || !e.status) return false;
+    return true;                                             // a real answer from the server (e.g. sign-in refused)
+  }
+}
+async function sync(manual) {
   if (syncing) return scheduleSync(2000);
   if (!signedIn()) { setSync(pendingCount() ? 'warn' : '', 'Not signed in'); return; }
-  if (!navigator.onLine) { setSync('', savedOnDevice()); return; }
+  if (!navigator.onLine) { setSync('', savedOnDevice()); if (manual === true) toast('No internet. Your flights are saved and will sync when you\'re back online.', 3500); return; }
   syncing = true;
+  if (!(await serverReachable())) {
+    syncing = false;
+    setSync('', savedOnDevice());
+    if (manual === true) toast('No internet on this connection. Your flights are saved and will sync when you\'re back online.', 4000);
+    return;
+  }
   let pushed = 0;
   try {
     const dirty = Object.values(flights).filter(x => x._dirty);
@@ -941,10 +966,10 @@ async function init() {
     if (e.target.id === 'moreBtn') { listLimit += 500; renderList(); return; }
     const it = e.target.closest('.item'); if (it && flights[it.dataset.id]) openEditor(flights[it.dataset.id]);
   };
-  $('#syncBtn').onclick = () => signedIn() ? sync() : show('settings');
+  $('#syncBtn').onclick = () => signedIn() ? sync(true) : show('settings');
   $('#signInBtn').onclick = startLogin;
   $('#signOutBtn').onclick = () => { if (confirm('Sign out of Home Assistant on this iPad? Your flights stay on the device.')) signOut(); };
-  $('#syncNowBtn').onclick = () => sync();
+  $('#syncNowBtn').onclick = () => sync(true);
   $('#tokenSave').onclick = () => {
     const t = $('#tokenInput').value.trim(); if (!t) return;
     auth = { longLived: t }; store.set('pl.auth', auth); $('#tokenInput').value = ''; renderSettings(); sync();
@@ -969,7 +994,12 @@ async function init() {
   window.addEventListener('beforeunload', e => { if (formDirty) { e.preventDefault(); e.returnValue = ''; } });
   window.addEventListener('online', () => scheduleSync());
   document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleSync(); });
-  setInterval(() => { if (!document.hidden) sync(); }, 120e3);
+  // check every minute while flights are waiting to sync (so it catches the switch to 4G after landing), else every 2
+  let lastAuto = Date.now();
+  setInterval(() => {
+    if (document.hidden || syncing) return;
+    if (Date.now() - lastAuto >= (pendingCount() ? 60e3 : 120e3)) { lastAuto = Date.now(); sync(); }
+  }, 15e3);
   tickZulu(); setInterval(tickZulu, 5e3);
 
   refreshAll();
