@@ -7,6 +7,8 @@ API:      GET  /api/pilot_logbook/flights          -> {"flights": [...], "server
           GET  /api/pilot_logbook/casa              -> CASA workbook status
           PUT  /api/pilot_logbook/casa/template     -> upload your CASA Excel workbook (admin only)
           GET  /api/pilot_logbook/casa.xlsx         -> the CASA workbook, rebuilt with every flight
+          GET  /api/pilot_logbook/roster            -> upcoming rostered flights (for pre-filling new entries)
+          POST /api/pilot_logbook/roster            -> replace them (sent by the Roster Manager add-on; admin only)
 All API routes need a normal Home Assistant access token.
 Flights live in <config>/.storage/pilot_logbook.flights and the CASA files in <config>/pilot_logbook/,
 so HA backups include them.
@@ -30,6 +32,7 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 
 from . import casa
+from . import roster
 
 try:
     from homeassistant.helpers.http import KEY_HASS
@@ -63,8 +66,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not isinstance(data, dict) or not isinstance(data.get("flights"), dict):
         data = {"flights": {}}
 
+    roster_store: Store = Store(hass, 1, f"{DOMAIN}.roster")
+    roster_data = await roster_store.async_load()
+    if not isinstance(roster_data, dict) or not isinstance(roster_data.get("sectors"), list):
+        roster_data = {"received": None, "sectors": []}
+
     hass.data[DOMAIN] = {"store": store, "data": data, "lock": asyncio.Lock(),
-                         "casa": {"summary": None, "error": None, "pending": None, "building": False}}
+                         "casa": {"summary": None, "error": None, "pending": None, "building": False},
+                         "roster_store": roster_store, "roster": roster_data}
 
     # HTTP routes cannot be removed again, so only register them once per HA run.
     if not hass.data.get(_HTTP_DONE):
@@ -76,6 +85,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.http.register_view(CasaInfoView())
         hass.http.register_view(CasaTemplateView())
         hass.http.register_view(CasaFileView())
+        hass.http.register_view(RosterView())
         hass.data[_HTTP_DONE] = True
 
     frontend.async_register_built_in_panel(
@@ -378,3 +388,42 @@ def _fire_saved(hass: HomeAssistant, flight: dict) -> None:
             "total": flight.get("total"),
         },
     )
+
+
+# ---------------------------------------------------------------- rostered flights
+class RosterView(HomeAssistantView):
+    """Upcoming rostered flights. Roster Manager POSTs them; the app GETs them on every sync."""
+
+    url = "/api/pilot_logbook/roster"
+    name = "api:pilot_logbook:roster"
+    requires_auth = True
+
+    async def get(self, request):
+        _hass, st = _state(request)
+        if st is None:
+            return self.json_message("Pilot Logbook is not loaded", 503)
+        now = time.time() * 1000
+        keep = [s for s in st["roster"]["sectors"] if s["arr"] > now - 2 * 86400e3 and s["dep"] < now + 15 * 86400e3]
+        return self.json({"received": st["roster"].get("received"), "sectors": keep})
+
+    async def post(self, request):
+        hass, st = _state(request)
+        if st is None:
+            return self.json_message("Pilot Logbook is not loaded", 503)
+        user = request.get("hass_user")
+        if user is not None and not user.is_admin:
+            return self.json_message("Only an administrator can replace the roster", 403)
+        raw = await request.read()
+        if len(raw) > MAX_BODY * 8:
+            return self.json_message("roster too large", 413)
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            return self.json_message("invalid JSON", 400)
+        sectors = body.get("sectors") if isinstance(body, dict) else None
+        if not isinstance(sectors, list) or len(sectors) > 400:
+            return self.json_message("'sectors' must be a list", 400)
+        clean = await hass.async_add_executor_job(roster.normalize, sectors)
+        st["roster"] = {"received": int(time.time() * 1000), "source": str(body.get("source", ""))[:40], "sectors": clean}
+        await st["roster_store"].async_save(st["roster"])
+        return self.json({"accepted": len(clean)})

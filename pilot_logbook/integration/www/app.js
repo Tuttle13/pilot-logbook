@@ -7,7 +7,7 @@
  *   fltDay, fltNight, aiDay, aiNight, sicDay, sicNight, picDay, picNight
  * plus derived totals kept for exports/totals: total, night, actual, sic, pic. */
 'use strict';
-const APP_VERSION = '2.2.4';   // keep in step with index.html ?v= and the add-on version
+const APP_VERSION = '2.3.1';   // keep in step with index.html ?v= and the add-on version
 
 // ---------- field definitions ----------
 const SPLITS = [            // [key prefix, label, derived total key]
@@ -230,6 +230,7 @@ async function sync(manual) {
     }
     saveLocal();
     store.set('pl.lastSync', Date.now());
+    await fetchRoster();
     const p = pendingCount();
     setSync(p ? 'warn' : 'ok', p ? `${p} to sync` : 'Synced ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
     if (changed) refreshAll();
@@ -271,12 +272,55 @@ function buildForm() {
   $$('#crewRows button[data-step]').forEach(b => { b.disabled = true; });
 }
 // New flights start with the Rules and Role you used last time (IFR / SIC if none yet).
+// During a rostered flight they also get that flight's route, planned flight time and aircraft type.
 function blankFlight() {
   const last = store.get('pl.lastChoice', { rules: 'IFR', role: 'SIC' });
-  return {
+  const f = {
     id: uid(), created: Date.now(), date: todayLocal(), time: nowHHMM(), role: last.role === 'PIC' ? 'PIC' : 'SIC',
     ifr: last.rules !== 'VFR', vfr: last.rules === 'VFR',
   };
+  const s = rosterSector();
+  rosterUsed = s;
+  if (s) {
+    const total = r1(s.ftMin / 60), night = s.nightMin ? Math.min(total, r1(s.nightMin / 60)) : 0, day = r1(total - night);
+    const own = f.role === 'PIC' ? 'pic' : 'sic';
+    Object.assign(f, { route: `${s.from} ${s.to}`, fltDay: day, fltNight: night, [own + 'Day']: day, [own + 'Night']: night });
+    const ty = ROSTER_TYPES[String(s.aircraft || '').toUpperCase()];
+    if (ty) f.type = ty;
+  }
+  return f;
+}
+
+// ---------- rostered flights (sent to Home Assistant by the Roster Manager add-on) ----------
+// Fetched on every sync and kept on the device, so a new entry made in the air (offline) still gets them.
+const ROSTER_TYPES = { '73H': 'B738', '738': 'B738', '7M8': 'B38M', '7M9': 'B39M', '73G': 'B737', '73W': 'B737', '737': 'B737' };
+let rosterUsed = null;
+async function fetchRoster() {
+  try {
+    const res = await api('GET', 'roster');
+    if (res && Array.isArray(res.sectors)) store.set('pl.roster', { got: Date.now(), sectors: res.sectors });
+  } catch (e) { /* older server or no connection: keep what we have */ }
+}
+const routeKey = r => String(r || '').toUpperCase().trim().split(/[\s\-–>]+/).filter(Boolean).join(' ');
+// The rostered sector you're logging right now: only from its scheduled departure until 30 minutes after its
+// scheduled arrival (allows for a delay, but ends before the next sector can start - minimum turnaround is 35).
+// Times are absolute (UTC), so it doesn't matter which time zone the iPad is set to.
+// A sector you've already logged (same route, that day or the day either side) and positioning (PAX) are skipped.
+const ROSTER_AFTER_ARRIVAL = 30 * 60e3;
+function rosterSector(now = Date.now()) {
+  const near = d => { const t = Date.parse(d + 'T12:00'); return x => Math.abs(Date.parse(x.date + 'T12:00') - t) <= 864e5; };
+  const open = (store.get('pl.roster', {}).sectors || [])
+    .filter(s => !s.pax && s.ftMin > 0 && s.dep <= now && now <= s.arr + ROSTER_AFTER_ARRIVAL)
+    .filter(s => { const same = near(s.date); return !live().some(f => routeKey(f.route) === `${s.from} ${s.to}` && same(f)); });
+  return open.sort((a, b) => b.dep - a.dep)[0] || null;      // if two ever overlap, the later departure
+}
+function showRosterHint() {
+  const s = rosterUsed, el = $('#rosterHint');
+  if (!el) return;
+  el.hidden = !s;
+  if (!s) return;
+  const hm = ms => new Date(ms).toISOString().slice(11, 16) + 'Z';
+  el.textContent = `From your roster: ${s.flight ? s.flight + ' ' : ''}${s.from}→${s.to} ${hm(s.dep)}–${hm(s.arr)}${s.aircraft ? ' · ' + s.aircraft : ''}`;
 }
 
 // ---------- aircraft type from tail rego ----------
@@ -415,6 +459,8 @@ function openEditor(f, isNew) {
   editingId = f.id;
   fillForm(f);
   setSuggestions(!!isNew);
+  if (!isNew) rosterUsed = null;
+  showRosterHint();
   $('#viewTitle').textContent = isNew ? 'Enter Flight' : 'Edit Flight';
   $('#delBar').hidden = !!isNew;
   form.hidden = false;

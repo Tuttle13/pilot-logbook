@@ -261,3 +261,7 @@ body.editing .topbar #menuBtn .menu-ic { display: none; }
   .savebtn { right: 54px; padding: 8px 16px; }
   .item { grid-template-columns: 20px 74px 58px 1fr 44px; padding: 6px 8px 6px 2px; }
 }
+
+/* ---- 2.3.0: note shown when a new entry was filled from the roster ---- */
+.rosterhint { margin: 0 0 8px; padding: 6px 12px; border-radius: 8px; font-size: 13px; color: var(--muted); background: var(--panel2); border: 1px solid var(--line); }
+@media (max-width: 1120px) { .rosterhint { margin-right: 0; } }
